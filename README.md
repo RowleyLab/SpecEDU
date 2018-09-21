@@ -1,5 +1,5 @@
-Spectrometer
-============
+SpecEDU
+=======
 
 A program for running a USB spectrometer. It includes firmware for the 
 spectrometer itself, and a user-interface for PC control.
@@ -22,4 +22,7 @@ and is a future goal of this project.
 Online Repository
 -----------------
 An online repository of this project may be accessed at:
+<https://github.com/RowleyLab/SpecEDU>
+
+This project has been forked from work originally done by Matthew Rowley as part of his graduate studies. That original project can be found at:
 <https://github.com/mattbrowley/Spectrometer>

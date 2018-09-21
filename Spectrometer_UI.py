@@ -4,8 +4,10 @@
 # Date Created: February 11, 2015
 
 # This program will gather and display spectra from a connected serial device.
-# It was written as part of research work at the University of Wisconsin -
-# Madison for use in the John C. Wright spectroscopy group.
+# It was started by then-student Matthew Rowley as part of research work at
+# the University of Wisconsin-Madison for use in the John C. Wright
+# spectroscopy group. Development now continues in the Rowley lab at Southern
+#  Utah University.
 
 # This program is licenced under an MIT license. Full licence is at the end of
 # this file.
@@ -28,38 +30,37 @@ class Main_Ui_Window(QtGui.QMainWindow):
         # create two GUI state booleans, and data
         self.is_blank = False  # Signal that the next spectrum is a blank
         self.free_running = False
-        self.temp = 0.0
-        self.humidity = 0.0
-        self.pressure = 0.0
+        self.absorption = False
+        self.transmission = False
         self.center = 0.0
         self.fwhm = 0.0
         # Load config file and create global data objects
-        # zero_data is [raw, integration time]
-        # active_data is [calibration, corrected, integration time]
-        # loaded_data is [calibration, corrected]
-        # fit_data is [calibration, corrected]
-        self.blank_data = [np.zeros(2048, float), 0]
+        # active_data is [calibration, raw, blank, integration time, display]
+        # loaded_data is [calibration, raw, blank, integration time, display]
+        # fit_data is [calibration, fit curve]
         self.active_data = [np.array(range(3000, 9000, 2))[:2048]/8000000000.0,
-                            np.zeros(2048, float), 5.0]
+                            np.zeros(2048, float), np.ones(2048, float), 5.0,
+                            np.zeros(2048, float)]
         self.loaded_data = [np.array(range(3000, 9000, 2))[:2048]/8000000000.0,
+                            np.zeros(2048, float), np.ones(2048, float), 5.0,
                             np.zeros(2048, float)]
         self.fit_data = [np.array(range(3000, 9000, 2))[:2048]/8000000000.0,
                          np.zeros(2048, float)]
 
         # generate outbound signal and link all signals
-        spec_Duino.updated.connect(self.getData)
-        sensor_Duino.updated.connect(self.getSensorData)
-        spec_Duino.connected.connect(self.checkConnections)
-        sensor_Duino.connected.connect(self.checkConnections)
+        spec_MSP.updated.connect(self.getData)
+        spec_MSP.connected.connect(self.checkConnections)
         self.signal = Outbound_Signal()
-        self.signal.get_spectrum.connect(spec_Duino.read)
-        self.signal.get_sensors.connect(sensor_Duino.read)
-        self.signal.set_spec_port.connect(spec_Duino.connectPort)
-        self.signal.set_sensor_port.connect(sensor_Duino.connectPort)
+        self.signal.get_spectrum.connect(spec_MSP.getSpectrum)
+        self.signal.set_spec_port.connect(spec_MSP.connectPort)
+        self.signal.lamp_on.connect(spec_MSP.lightLamp)
+        self.signal.lamp_off.connect(spec_MSP.dimLamp)
+        self.signal.increment_integration.connect(spec_MSP.iTimePlus)
+        self.signal.decrement_integration.connect(spec_MSP.iTimeMinus)
 
         # Create the main UI window with a dark theme
         QtGui.QMainWindow.__init__(self, parent)
-        self.setWindowTitle("Tsunami Monitor")
+        self.setWindowTitle("SUU Spectrophotometer")
         palette = QtGui.QPalette()
         palette.setColor(QtGui.QPalette.Window, QtCore.Qt.black)
         palette.setColor(QtGui.QPalette.Dark, QtCore.Qt.gray)
@@ -73,18 +74,14 @@ class Main_Ui_Window(QtGui.QMainWindow):
         self.parameters_layout = QtGui.QHBoxLayout()
         self.parameters_layout.setMargin(0)
         # Integration Time Label and SpinBox
-        self.i_time_label = QtGui.QLabel(self.main_frame)
-        self.i_time_label.setToolTip("Set Time to Integrate")
-        self.i_time_label.setText("Integration Time (ms):")
-        self.parameters_layout.addWidget(self.i_time_label)
-        self.i_time_box = QtGui.QSpinBox(self.main_frame)
-        self.i_time_box.setWrapping(False)
-        self.i_time_box.setButtonSymbols(QtGui.QAbstractSpinBox.UpDownArrows)
-        self.i_time_box.setMaximum(10000)
-        self.i_time_box.setMinimum(1)
-        self.i_time_box.setProperty("value", 5)
-        self.i_time_box.setToolTip("Set Time to Integrate")
-        self.parameters_layout.addWidget(self.i_time_box)
+        self.i_time_plus_button = QtGui.QPushButton(self.main_frame)
+        self.i_time_plus_button.setToolTip("Increase Integration Time")
+        self.i_time_plus_button.setText("Increase Integration")
+        self.parameters_layout.addWidget(self.i_time_plus_button)
+        self.i_time_minus_button = QtGui.QPushButton(self.main_frame)
+        self.i_time_minus_button.setToolTip("Decrease Integration Time")
+        self.i_time_minus_button.setText("Decrease Integration")
+        self.parameters_layout.addWidget(self.i_time_minus_button)
         # Load Calibration Curve Button
         self.load_cal_button = QtGui.QPushButton(self.main_frame)
         self.load_cal_button.setStyleSheet("background-color: "
@@ -106,24 +103,16 @@ class Main_Ui_Window(QtGui.QMainWindow):
                                         QtGui.QSizePolicy.Minimum)
         self.parameters_layout.addItem(spacerItemR)
         # Com Port Labels and ComboBoxes
-        self.sensor_port_label = QtGui.QLabel(self.main_frame)
-        self.sensor_port_label.setToolTip("Com Port for the Sensor Arduino")
-        self.sensor_port_label.setText("Sensor Port:")
-        self.parameters_layout.addWidget(self.sensor_port_label)
-        self.sensor_port_box = QtGui.QComboBox(self.main_frame)
-        self.sensor_port_box.setToolTip("Com Port for the Sensor Arduino")
-        self.parameters_layout.addWidget(self.sensor_port_box)
         self.line_9 = QtGui.QFrame(self.main_frame)
         self.line_9.setFrameShape(QtGui.QFrame.VLine)
         self.line_9.setFrameShadow(QtGui.QFrame.Sunken)
         self.parameters_layout.addWidget(self.line_9)
         self.spec_port_label = QtGui.QLabel(self.main_frame)
-        self.spec_port_label.setToolTip("Com Port for the Spectrometer "
-                                        "Arduino")
+        self.spec_port_label.setToolTip("Com Port for the Spectrometer")
         self.spec_port_label.setText("Spectrum Port:")
         self.parameters_layout.addWidget(self.spec_port_label)
         self.spec_port_box = QtGui.QComboBox(self.main_frame)
-        self.spec_port_box.setToolTip("Com Port for the Spectrometer Arduino")
+        self.spec_port_box.setToolTip("Com Port for the Spectrometer")
         self.findPorts()
         self.parameters_layout.addWidget(self.spec_port_box)
         self.vertical_layout.addLayout(self.parameters_layout)
@@ -132,7 +121,24 @@ class Main_Ui_Window(QtGui.QMainWindow):
         self.line_3.setFrameShadow(QtGui.QFrame.Sunken)
         self.vertical_layout.addWidget(self.line_3)
         self.button_layout = QtGui.QHBoxLayout()
+        # Lamp Button
+        os.chdir(image_path)
+        self.bright_lamp = QtGui.QIcon("BrightBulb.png")
+        self.dark_lamp = QtGui.QIcon("DarkBulb.png")
+        os.chdir(data_path)
+        self.lamp_status = False
+        self.lamp_button = QtGui.QPushButton(self.main_frame)
+        self.lamp_button.setToolTip("Turn on Lamp")
+        self.lamp_button.setFixedSize(QtCore.QSize(40, 40))
+        self.lamp_button.setIcon(self.dark_lamp)
+        self.button_layout.addWidget(self.lamp_button)
+
+        self.line_5 = QtGui.QFrame(self.main_frame)
+        self.line_5.setFrameShape(QtGui.QFrame.VLine)
+        self.line_5.setFrameShadow(QtGui.QFrame.Sunken)
+        self.button_layout.addWidget(self.line_5)
         # Blank Buttons
+
         self.take_blank_button = QtGui.QPushButton(self.main_frame)
         self.take_blank_button.setToolTip("Acquire a Blank Spectrum to Subract"
                                           " from All Future Spectra")
@@ -151,6 +157,7 @@ class Main_Ui_Window(QtGui.QMainWindow):
         self.button_layout.addWidget(self.clear_blank_button)
         self.line_1 = QtGui.QFrame(self.main_frame)
         self.line_1.setFrameShape(QtGui.QFrame.VLine)
+
         self.line_1.setFrameShadow(QtGui.QFrame.Sunken)
         self.button_layout.addWidget(self.line_1)
         # Acquire Buttons
@@ -175,6 +182,24 @@ class Main_Ui_Window(QtGui.QMainWindow):
                                            "as Possible")
         self.free_running_label.setMaximumWidth(115)
         self.button_layout.addWidget(self.free_running_label)
+        self.line_10 = QtGui.QFrame(self.main_frame)
+        self.line_10.setFrameShape(QtGui.QFrame.VLine)
+        self.line_10.setFrameShadow(QtGui.QFrame.Sunken)
+        self.button_layout.addWidget(self.line_10)
+        # Data Processing Buttons
+        self.absorption_button = QtGui.QPushButton(self.main_frame)
+        self.absorption_button.setText("Absorption")
+        self.absorption_button.setToolTip("Display Data as Absorption")
+        self.button_layout.addWidget(self.absorption_button)
+        self.percent_transmittance_button = QtGui.QPushButton(self.main_frame)
+        self.percent_transmittance_button.setText("Percent Transmittance")
+        self.percent_transmittance_button.setToolTip("Display Data as Percent"
+                                                     "Transmittance")
+        self.button_layout.addWidget(self.percent_transmittance_button)
+        self.raw_data_button = QtGui.QPushButton(self.main_frame)
+        self.raw_data_button.setText("Raw Data")
+        self.raw_data_button.setToolTip("Display Data as Raw Data")
+        self.button_layout.addWidget(self.raw_data_button)
         spacerItem1 = QtGui.QSpacerItem(400, 520, QtGui.QSizePolicy.Preferred,
                                         QtGui.QSizePolicy.Preferred)
         self.button_layout.addItem(spacerItem1)
@@ -217,30 +242,7 @@ class Main_Ui_Window(QtGui.QMainWindow):
         self.fwhm_label.setText("FWHM:  ")
         self.fwhm_label.setToolTip("FWHM of Best Gaussian Fit")
         self.fit_values_layout.addWidget(self.fwhm_label)
-        self.line_5 = QtGui.QFrame(self.main_frame)
-        self.line_5.setFrameShape(QtGui.QFrame.VLine)
-        self.line_5.setFrameShadow(QtGui.QFrame.Sunken)
-        self.fit_values_layout.addWidget(self.line_5)
-        self.temp_label = QtGui.QLabel(self.main_frame)
-        self.temp_label.setText("Temp:  ")
-        self.temp_label.setToolTip("Current Ambient Temperature")
-        self.fit_values_layout.addWidget(self.temp_label)
-        self.line_6 = QtGui.QFrame(self.main_frame)
-        self.line_6.setFrameShape(QtGui.QFrame.VLine)
-        self.line_6.setFrameShadow(QtGui.QFrame.Sunken)
-        self.fit_values_layout.addWidget(self.line_6)
-        self.humidity_label = QtGui.QLabel(self.main_frame)
-        self.humidity_label.setText("Humidity:  ")
-        self.humidity_label.setToolTip("Current Ambient Humidity")
-        self.fit_values_layout.addWidget(self.humidity_label)
-        self.line_7 = QtGui.QFrame(self.main_frame)
-        self.line_7.setFrameShape(QtGui.QFrame.VLine)
-        self.line_7.setFrameShadow(QtGui.QFrame.Sunken)
-        self.fit_values_layout.addWidget(self.line_7)
-        self.pressure_label = QtGui.QLabel(self.main_frame)
-        self.pressure_label.setText("Pressure:  ")
-        self.pressure_label.setToolTip("Current Ambient Pressure")
-        self.fit_values_layout.addWidget(self.pressure_label)
+
         self.vertical_layout.addLayout(self.fit_values_layout)
         # The plot widget
         self.plot_object = pg.PlotWidget()
@@ -255,7 +257,6 @@ class Main_Ui_Window(QtGui.QMainWindow):
         self.plot_object.addItem(self.curser)
         self.loaded_curve = pg.PlotCurveItem(pen=(35, 100))
         self.plot_object.addItem(self.loaded_curve)
-        self.updateLoadedData()
         self.loaded_point = pg.CurvePoint(self.loaded_curve)
         self.plot_object.addItem(self.loaded_point)
         self.loaded_arrow = pg.ArrowItem(angle=55, pen=(39, 100),
@@ -274,9 +275,7 @@ class Main_Ui_Window(QtGui.QMainWindow):
         self.setCentralWidget(self.main_frame)
         # connect all the ui widgets to functions
         self.curser.sigPositionChanged.connect(self.curserMoved)
-        self.i_time_box.valueChanged.connect(self.setIntegrationT)
         self.load_cal_button.clicked.connect(self.loadCalibration)
-        self.sensor_port_box.currentIndexChanged.connect(self.selectSensorPort)
         self.spec_port_box.currentIndexChanged.connect(self.selectSpecPort)
         self.take_blank_button.clicked.connect(self.takeBlank)
         self.clear_blank_button.clicked.connect(self.clearBlank)
@@ -284,30 +283,31 @@ class Main_Ui_Window(QtGui.QMainWindow):
         self.free_running_button.toggled.connect(self.setFreeRunning)
         self.save_button.clicked.connect(self.saveCurve)
         self.load_button.clicked.connect(self.loadCurve)
+        self.lamp_button.clicked.connect(self.toggleLamp)
+        self.i_time_plus_button.clicked.connect(self.increaseIntegration)
+        self.i_time_minus_button.clicked.connect(self.decreaseIntegration)
+        self.absorption_button.clicked.connect(self.toggleAbsorption)
+        self.percent_transmittance_button.clicked.connect(self.toggleTransmittance)
+        self.raw_data_button.clicked.connect(self.toggleRawData)
         # Start collecting sensor data and load the config
-        self.signal.get_sensors.emit()
-        self.timer = QtCore.QTimer()
-        self.timer.timeout.connect(self.signal.get_sensors.emit)
-        self.timer.start(10000)  # update sensor data every 10s
         self.loadConfig()
 
     # These methods are called as part of startup
     def loadConfig(self):  # Loads the previously used settings
+        config_path = os.path.join(data_path, ".spec.config")
         try:
-            with open(".spec.config", "r") as config_file:
+            with open(config_path, "r") as config_file:
                 lines = config_file.readlines()
                 # Set the port combo boxes and attempt to connect
-                self.sensor_port_box.setCurrentIndex(self.sensor_port_box.
-                                                     findText(lines[1][:-1]))
                 self.spec_port_box.setCurrentIndex(self.spec_port_box.
-                                                   findText(lines[3][:-1]))
-                self.importCalibration(lines[5][:-1])
-                self.importCurve(lines[7][:-1])
-                self.blank_data[1] = int(lines[9])
-                self.i_time_box.setValue(int(lines[9]))
+                                                   findText(lines[1][:-1]))
+                self.importCalibration(lines[3][:-1])
+                self.importCurve(lines[5][:-1])
+                self.active_data[3] = int(lines[7])
+                self.i_time_box.setValue(int(lines[7]))
                 self.setIntegrationT(verbose=False)
-                for index, value in enumerate(lines[11:]):
-                    self.blank_data[0][index] = float(value)
+                for index, value in enumerate(lines[9:]):
+                    self.active_data[2][index] = float(value)
         except OSError as e:
             self.updateMessage("**Filename Error - spec.config File Not "
                                "Properly Imported**\n" + str(e)[:60])
@@ -320,7 +320,6 @@ class Main_Ui_Window(QtGui.QMainWindow):
     def findPorts(self):
         self.ports = serial.tools.list_ports.comports()
         for index, comport in enumerate(self.ports[::-1]):
-            self.sensor_port_box.addItem(comport[0])
             self.spec_port_box.addItem(comport[0])
         if len(self.ports) == 0:
             self.updateMessage("**No Available Com Ports Detected**")
@@ -329,12 +328,10 @@ class Main_Ui_Window(QtGui.QMainWindow):
     def closeEvent(self, evt):
         if self.free_running:
             self.free_running_button.setChecked(False)
-        spec_Duino.closePort()
-        sensor_Duino.closePort()
+        spec_MSP.closePort()
         spec_thread.quit()
-        sensor_thread.quit()
-        while(not spec_thread.isFinished() or not sensor_thread.isFinished()):
-            time.sleep(1)
+        while(not spec_thread.isFinished()):
+            time.sleep(0.5)
         QtGui.QMainWindow.closeEvent(self, evt)
 
     # These methods are for interacting with the graph
@@ -359,19 +356,51 @@ class Main_Ui_Window(QtGui.QMainWindow):
                 self.curser.setValue(curser_pos)
 
     # Button press methods
-    def setIntegrationT(self, verbose=True):
-        i_Time.write(self.i_time_box.value())
-        message = self.message_label.text()
-        if verbose:
-            message = ("Integration time set to {} ms - {}"
-                       .format(self.i_time_box.value(),
-                               time.strftime("%Y-%m-%d %H:%M:%S")))
-        if self.i_time_box.value() != self.blank_data[1] and \
-           self.blank_data[1] != 0:
-            message = (message + "\n*Integration Time is Not the Same as That "
-                       "Used for the Blank ({} ms) - Consider Taking a New "
-                       "Blank*".format(self.blank_data[1]))
-        self.updateMessage(message)
+    def toggleAbsorption(self):
+        self.absorption = True
+        self.transmission = False
+        self.updateActiveData()
+        self.updateLoadedData()
+        self.findFit()
+        self.plot_object.setLabel('left', 'Absorbance')
+
+    def toggleTransmittance(self):
+        self.transmission = True
+        self.absorption = False
+        self.updateActiveData()
+        self.updateLoadedData()
+        self.findFit()
+        self.plot_object.setLabel('left', 'Percent Transmittance')
+
+    def toggleRawData(self):
+        self.absorption = False
+        self.transmission = False
+        self.updateActiveData()
+        self.updateLoadedData()
+        self.findFit()
+        self.plot_object.setLabel('left', 'Raw')
+
+    def toggleLamp(self):
+        if(self.lamp_status):
+            self.signal.lamp_off.emit()
+            self.lamp_button.setIcon(self.dark_lamp)
+            self.lamp_status = False
+            self.lamp_button.setToolTip("Turn Lamp On")
+            self.updateMessage("Lamp has been turned off")
+        else:
+            self.signal.lamp_on.emit()
+            self.lamp_button.setIcon(self.bright_lamp)
+            self.lamp_status = True
+            self.lamp_button.setToolTip("Turn Lamp Off")
+            self.updateMessage("Lamp has been turned on")
+
+    def increaseIntegration(self):
+        self.signal.increment_integration.emit()
+        self.updateMessage("Integration has Increased")
+
+    def decreaseIntegration(self):
+        self.signal.decrement_integration.emit()
+        self.updateMessage("Integration has Decrease")
 
     def loadCalibration(self):
         was_free_running = False
@@ -387,37 +416,22 @@ class Main_Ui_Window(QtGui.QMainWindow):
             if was_free_running:
                 self.free_running_button.setChecked(True)
             return
+
         self.importCalibration(load_path)
         self.calToConfig(load_path)
         if was_free_running:
             self.free_running_button.setChecked(True)
 
-    def selectSensorPort(self):
-        spec_index = self.spec_port_box.currentIndex()
-        sensor_index = self.sensor_port_box.currentIndex()
-        if sensor_index != spec_index:
-            sensor_Port.write(self.sensor_port_box.currentText())
-            self.signal.set_sensor_port.emit()
-        else:
-            self.updateMessage("**Please Select Different Com Ports for "
-                               "Sensor and Spectrometer**")
-
     def selectSpecPort(self):
-        spec_index = self.spec_port_box.currentIndex()
-        sensor_index = self.sensor_port_box.currentIndex()
-        if sensor_index != spec_index:
-            spec_Port.write(self.spec_port_box.currentText())
-            self.signal.set_spec_port.emit()
-        else:
-            self.updateMessage("**Please Select Different Com Ports for "
-                               "Sensor and Spectrometer**")
+        spec_Port.write(self.spec_port_box.currentText())
+        self.signal.set_spec_port.emit()
 
     def takeBlank(self):
         self.is_blank = True
         self.signal.get_spectrum.emit()
 
     def clearBlank(self):
-        self.applyBlank([np.zeros(2048, float), 0])
+        self.applyBlank([np.ones(2048, float), 0])
         self.updateActiveData()
         self.findFit()
         self.updateMessage("Blank Cleared - {}"
@@ -464,7 +478,7 @@ class Main_Ui_Window(QtGui.QMainWindow):
                 writer = csv.writer(save_file, dialect="excel-tab")
                 cal = self.active_data[0]
                 dat = self.active_data[1]
-                blank = self.blank_data[0]
+                blank = self.active_data[2]
                 for rownum in range(len(cal)):
                     row = [cal[rownum], dat[rownum], blank[rownum]]
                     writer.writerow(row)
@@ -541,21 +555,21 @@ class Main_Ui_Window(QtGui.QMainWindow):
                 reader = csv.reader(load_file, dialect='excel-tab')
                 new_calibration = np.zeros(2048, float)
                 new_data = np.zeros(2048, float)
-                starting_row = 15
+                new_blank = np.zeros(2048, float)
+                starting_row = 11
                 for index, row in enumerate(reader):
                     if index >= starting_row:
                         new_calibration[index - starting_row] = float(row[0])
                         new_data[index - starting_row] = float(row[1])
+                        new_blank[index - starting_row] = float(row[2])
                 self.loaded_data[0] = new_calibration
                 self.loaded_data[1] = new_data
+                self.loaded_data[2] = new_blank
+            self.last_load_path=load_path
             self.updateLoadedData()
             self.updateMessage("Spectrum Loaded - {}"
                                .format(time.strftime("%Y-%m-%d %H:%M:%S")))
-            # Add a useful message about the filename of the loaded curve
-            self.loaded_point.setPos(0.20)
-            filename = os.path.basename(load_path)
-            self.loaded_text.setText("Loaded Curve: " + filename,
-                                     color=(50, 250, 50))
+
         except OSError as e:
             self.updateMessage("**Filename Error - Spectrum May Have Not "
                                "Loaded Properly**\n" + str(e)[:60])
@@ -571,11 +585,11 @@ class Main_Ui_Window(QtGui.QMainWindow):
         try:
             with open(".spec.config", "r") as config_file:
                 lines = config_file.readlines()
-            lines[8] = "Integration Time at Last Blank Taken:\n"
-            lines[9] = str(self.blank_data[1]) + "\n"
-            lines[10] = "Last Blank Taken:"
-            for index, value in enumerate(self.blank_data[0]):
-                lines[11 + index] = "\n" + str(value)
+            lines[6] = "Integration Time at Last Blank Taken:\n"
+            lines[7] = str(self.active_data[3]) + "\n"
+            lines[8] = "Last Blank Taken:"
+            for index, value in enumerate(self.active_data[2]):
+                lines[9 + index] = "\n" + str(value)
             with open(".spec.config", "wt") as config_file:
                 config_file.writelines(lines)
         except OSError as e:
@@ -591,8 +605,8 @@ class Main_Ui_Window(QtGui.QMainWindow):
         try:
             with open(".spec.config", "r") as config_file:
                 lines = config_file.readlines()
-            lines[6] = "Spectrum File Last Loaded:\n"
-            lines[7] = str(load_path) + "\n"
+            lines[4] = "Spectrum File Last Loaded:\n"
+            lines[5] = str(load_path) + "\n"
             with open(".spec.config", "wt") as config_file:
                 config_file.writelines(lines)
         except OSError as e:
@@ -609,8 +623,8 @@ class Main_Ui_Window(QtGui.QMainWindow):
         try:
             with open(".spec.config", "r") as config_file:
                 lines = config_file.readlines()
-            lines[4] = "Calibration File Last Used:\n"
-            lines[5] = str(load_path) + "\n"
+            lines[2] = "Calibration File Last Used:\n"
+            lines[3] = str(load_path) + "\n"
             with open(".spec.config", "wt") as config_file:
                 config_file.writelines(lines)
         except OSError as e:
@@ -627,10 +641,8 @@ class Main_Ui_Window(QtGui.QMainWindow):
         try:
             with open(".spec.config", "r") as config_file:
                 lines = config_file.readlines()
-            lines[0] = "Sensor Port Last Used:\n"
-            lines[1] = self.sensor_port_box.currentText() + "\n"
-            lines[2] = "Spec Port Last Used:\n"
-            lines[3] = self.spec_port_box.currentText() + "\n"
+            lines[0] = "Spec Port Last Used:\n"
+            lines[1] = self.spec_port_box.currentText() + "\n"
             with open(".spec.config", "wt") as config_file:
                 config_file.writelines(lines)
         except OSError as e:
@@ -642,7 +654,7 @@ class Main_Ui_Window(QtGui.QMainWindow):
                                "Properly Written**\n" + str(e)[:60])
             print(e)
 
-    # These functions are called when the Arduinos send signals
+    # These functions are called when the microcontroller send signals
     def getData(self):  # A signal says there is new data in spectrum object
         if self.free_running:
             # Start getting the next spectrum right away
@@ -653,50 +665,30 @@ class Main_Ui_Window(QtGui.QMainWindow):
                                .format(time.strftime("%Y-%m-%d %H:%M:%S")))
             self.is_blank = False
         else:
-            self.active_data[1:3] = spectrum.read()
-        self.active_data[1] = self.active_data[1] - self.blank_data[0]
+            self.active_data[1] = spectrum.read()
         self.updateActiveData()
         self.findFit()
 
-    # A signal says there is new sensor data in the sensor_Data object
-    def getSensorData(self):
-        self.temp, self.humidity, self.pressure = sensor_Data.read()
-        # This is necessary to properly handle the degree glyph in python 2
-        try:
-            self.temp_label.setText(QtCore.QString
-                                    .fromUtf8("{0:.2f} °C".format(self.temp)))
-        except Exception:
-            self.temp_label.setText("Temp:  {0:.2f} °C".format(self.temp))
-        self.humidity_label.setText("Humidity:  {0:.2f} %"
-                                    .format(self.humidity))
-        self.pressure_label.setText("Pressure:  {0:.2f} pa"
-                                    .format(self.pressure))
-
     def checkConnections(self):
         status = port_Status.read()
-        if status[0]:
-            message = "Sensor Arduino Connected Properly\n"
+        if status:
+            message = "Spectrum Arduino Connected Properly"
         else:
-            message = "**Warning! Sensor Arduino Could Not Connect - Dummy "\
-                      "Data is Being Generated**\n"
-        if status[1]:
-            message += "Spectrum Arduino Connected Properly"
-        else:
-            message += "**Warning! Spetrum Arduino Could Not Connect - Dummy "\
+            message = "**Warning! Spetrum Arduino Could Not Connect - Dummy "\
                        "Data is Being Generated**"
         self.updateMessage(message)
-        if status[0] and status[1]:  # only save successfull settings
+        if status:  # only save successfull settings
             self.portsToConfig()
 
     # Some extra functions for dealing with data
     def findFit(self):
-        amplitude_guess = np.amax(self.active_data[1])
+        amplitude_guess = np.amax(self.active_data[4])
         center_guess = self.active_data[0][1024]
         fwhm_guess = 80 * 10.0**-9.0
         offset_guess = 2.5
         guesses = [amplitude_guess, center_guess, fwhm_guess, offset_guess]
         fit_vals, cov = fit(gaussian, self.active_data[0],
-                            self.active_data[1], p0=guesses)
+                            self.active_data[4], p0=guesses)
         self.fit_data[1] = gaussian(self.fit_data[0], fit_vals[0], fit_vals[1],
                                     fit_vals[2], fit_vals[3])
         self.center = fit_vals[1]
@@ -707,18 +699,42 @@ class Main_Ui_Window(QtGui.QMainWindow):
         self.fwhm_label.setText("FWHM:  {0:.2f} nm".format(self.fwhm * 10**9))
 
     def applyBlank(self, new_blank):
-        # First undo the old blank on the currently active data
-        old_blank = self.blank_data
-        self.active_data[1] = self.active_data[1] + old_blank[0]
-        self.blank_data = new_blank
+        self.active_data[2] = new_blank
         self.blankToConfig()
+
+    def treatActiveData(self):
+        if self.absorption:
+            self.active_data[4] = np.log10(self.active_data[2] /
+                                  self.active_data[1])
+        elif self.transmission:
+            self.active_data[4] = self.active_data[1] / self.active_data[2]*100
+
+        else:
+            self.active_data[4] = self.active_data[1] - self.active_data[2]
+
+    def treatLoadedData(self):
+        if self.absorption:
+            self.loaded_data[4] = np.log10(self.loaded_data[2] /
+                                  self.loaded_data[1])
+        elif self.transmission:
+            self.loaded_data[4] = self.loaded_data[1] / self.loaded_data[2]*100
+
+        else:
+            self.loaded_data[4] = self.loaded_data[1] - self.loaded_data[2]
 
     # Some functions that update the ui
     def updateActiveData(self):
-        self.active_curve.setData(self.active_data[0], self.active_data[1])
+        self.treatActiveData()
+        self.active_curve.setData(self.active_data[0], self.active_data[4])
 
     def updateLoadedData(self):
-        self.loaded_curve.setData(self.loaded_data[0], self.loaded_data[1])
+        self.treatLoadedData()
+        self.loaded_curve.setData(self.loaded_data[0], self.loaded_data[4])
+        # Add a useful message about the filename of the loaded curve
+        self.loaded_point.setPos(0.20)
+        filename = os.path.basename(self.last_load_path)
+        self.loaded_text.setText("Loaded Curve: " + filename,
+                                 color=(50, 250, 50))
 
     def updateMessage(self, message):
         self.message_label.setText(message)
@@ -726,19 +742,16 @@ class Main_Ui_Window(QtGui.QMainWindow):
     def generateHeader(self):
         header = ("This spectrum was collected on:\t" +
                   time.strftime("%Y-%m-%d\t%H:%M:%S\n"))
-        header += "Integration Time:\t{}\tms\n".format(self.active_data[2])
-        header += "------------------------\n"
-        header += "Environmental Parameters\n"
-        header += "------------------------\n"
-        header += "Temp:\t{0:.2f}\tdegrees C\n".format(self.temp)
-        header += "Humidity:\t{0:.2f}\t%\n".format(self.humidity)
-        header += "Pressure:\t{0:.2f}\tpa\n".format(self.pressure)
+        header += "Integration Time:\t{}\tms\n".format(self.active_data[3])
         header += "--------------\n"
         header += "Fit Parameters\n"
         header += "--------------\n"
         header += "Center:\t{0:.3e}\tm\n".format(self.center)
-        header += "FWHM:\t{0:.2e}\tm\n\n".format(self.fwhm)
-        header += "Wavelength (m)\tCorrected Signal\tApplied Blank\n"
+        header += "FWHM:\t{0:.2e}\tm\n".format(self.fwhm)
+        header += "-------------\n"
+        header += "Spectrum Data\n"
+        header += "-------------\n"
+        header += "Wavelength (m)\tRaw Signal\tBlank Signal\n"
         return header
 
 
@@ -747,7 +760,8 @@ class Spectrum(QtCore.QMutex):
 
     def __init__(self):
         QtCore.QMutex.__init__(self)
-        self.value = [np.zeros(2048, float), 5]
+        self.value = np.zeros(2048, float)  # This is an array containing
+                                            # the pixel values
 
     def read(self):
         return self.value
@@ -758,19 +772,13 @@ class Spectrum(QtCore.QMutex):
         self.unlock()
 
 
-class Sensor_Data(QtCore.QMutex):
+class QLabelButton(QtGui.QLabel):
 
-    def __init__(self):
-        QtCore.QMutex.__init__(self)
-        self.value = [0.0, 0.0, 0.0]  # temp, humidity, pressure
+    def __init__(self, parent):
+        QtGui.QLabel.__init__(self, parent)
 
-    def read(self):
-        return self.value
-
-    def write(self, new_value):
-        self.lock()
-        self.value = new_value
-        self.unlock()
+    def mouseReleaseEvent(self, ev):
+        self.emit(QtCore.SIGNAL('clicked()'))
 
 
 class I_Time(QtCore.QMutex):
@@ -804,7 +812,7 @@ class Com_Port(QtCore.QMutex):
 class Port_Status(QtCore.QMutex):
     def __init__(self):
         QtCore.QMutex.__init__(self)
-        self.value = [False, False]  # Connection status of sensor, spec ports
+        self.value = False  # Connection status of sensor, spec ports
 
     def read(self):
         return self.value
@@ -815,63 +823,24 @@ class Port_Status(QtCore.QMutex):
         self.unlock()
 
 
-# These classes handle the communication between arduinos
+# These classes handle the communication between arduinos and the UI
 class Outbound_Signal(QtCore.QObject):
     get_spectrum = QtCore.pyqtSignal()
-    get_sensors = QtCore.pyqtSignal()
     set_spec_port = QtCore.pyqtSignal()
-    set_sensor_port = QtCore.pyqtSignal()
+    lamp_on = QtCore.pyqtSignal()
+    lamp_off = QtCore.pyqtSignal()
+    increment_integration = QtCore.pyqtSignal()
+    decrement_integration = QtCore.pyqtSignal()
+# need the signals or I and D and connect them
+# do buttons
 
-
-class Sensor_Duino(QtCore.QObject):
+class Spectrometer(QtCore.QObject):
     updated = QtCore.pyqtSignal()
     connected = QtCore.pyqtSignal()
     port = None
     valid_connection = False
 
-    def read(self):
-        if not self.valid_connection:  # Generate dummy data
-            data = np.random.uniform(0, 12, 3)
-        else:  # Get data from the Arduino
-            self.port.write('r')
-            raw_vals = self.port.readline()
-            data = np.fromstring(raw_vals, dtype=float, sep=',')
-        sensor_Data.write(data)
-        self.updated.emit()
-
-    def connectPort(self):
-        status = port_Status.read()
-        self.closePort()
-        try:
-            self.port = serial.Serial(port=sensor_Port.read(), baudrate=9600,
-                                      timeout=2)
-            print("Connecting to the Sensor_Duino on port " +
-                  str(sensor_Port.read()))
-            status[0] = True
-            self.valid_connection = True
-        except Exception as e:
-            print(e)
-            status[0] = False
-            self.valid_connection = False
-        port_Status.write(status)
-        self.connected.emit()
-
-    def closePort(self):
-        print("Closing Sensor port if open")
-        try:
-            self.port.close()
-        except Exception as e:
-            print(e)
-
-
-class Spec_Duino(QtCore.QObject):
-    updated = QtCore.pyqtSignal()
-    connected = QtCore.pyqtSignal()
-    port = None
-    valid_connection = False
-
-    def read(self):
-        i_time = str(i_Time.read()) + " "
+    def getSpectrum(self):
         if not self.valid_connection:
             # this generates a random gaussian dummy spectrum
             amp = 3000. + np.random.random() * 1000
@@ -882,12 +851,29 @@ class Spec_Duino(QtCore.QObject):
             data = data + gaussian(np.arange(2048), amp, center, fwhm, offset)
         else:  # Get real data from the arduino
             data = np.zeros(2048)
-            self.port.write(i_time.encode())
+            self.port.write("S".encode())
+            # self.port.write(i_time.encode())
             stream = self.port.read(4096)
             for i in range(2048):
                 data[i] = stream[2*i] << 8 | stream[2*i+1]
-        spectrum.write([data, i_time])
+        spectrum.write(data)
         self.updated.emit()
+
+    def dimLamp(self):
+        if(self.valid_connection):
+            self.port.write("F".encode())  # "F" for "off"
+
+    def lightLamp(self):
+        if(self.valid_connection):
+            self.port.write("L".encode())  # "L" for "on"
+
+    def iTimePlus(self):
+        if(self.valid_connection):
+            self.port.write("I".encode())  # "I" for Increment
+
+    def iTimeMinus(self):
+        if(self.valid_connection):
+            self.port.write("D".encode())  # "D" for Decrement
 
     def connectPort(self):
         status = port_Status.read()
@@ -895,20 +881,20 @@ class Spec_Duino(QtCore.QObject):
         try:
             self.port = serial.Serial(port=spec_Port.read(), baudrate=115200,
                                       timeout=2)
-            print("Connecting to the Spec_Duino on port " +
+            print("Connecting to the Spectrometer on port " +
                   str(spec_Port.read()))
             response = str(self.port.readline())
             if "Spec" not in response:
                 print('Response on the Serial Port:{}'.format(response))
-                #raise ConnectionError("Spec Arduino may not be running proper "
-                #                      "firmware")
+            # raise ConnectionError("Spec Arduino may not be running proper "
+            #                      "firmware")
             # Sometimes an errant extra "Spec" appears in the input buffer
             self.port.readline()  # This clears "Spec" or waits 2s to timeout
-            status[1] = True
+            status = True
             self.valid_connection = True
         except Exception as e:
             print(e)
-            status[1] = False
+            status = False
             self.valid_connection = False
         port_Status.write(status)
         self.connected.emit()
@@ -932,6 +918,7 @@ def main():
         file_path = os.path.abspath(__file__)
         folder_path = os.path.dirname(file_path)
         data_path = os.path.join(folder_path, "Data")
+        image_path = os.path.join(folder_path, "Images")
         os.chdir(data_path)
     except:  # Next try using the cwd
         folder_path = os.getcwd()
@@ -946,32 +933,34 @@ def main():
     MainWindow.showMaximized()
     return MainWindow
 
+# global variables
+data_path = ""
+image_path = ""
+file_path = os.path.abspath(__file__)
+folder_path = os.path.dirname(file_path)
+data_path = os.path.join(folder_path, "Data")
+image_path = os.path.join(folder_path, "Images")
+os.chdir(data_path)
+
 # Instantiate the application
 app = QtGui.QApplication(sys.argv)
 
 # Generate the mutex objects
 spectrum = Spectrum()
-sensor_Data = Sensor_Data()
 i_Time = I_Time()
 spec_Port = Com_Port()
-sensor_Port = Com_Port()
 port_Status = Port_Status()
 
 # Generate the Arduinos and start them in their own threads
-spec_Duino = Spec_Duino()
+spec_MSP = Spectrometer()
 spec_thread = QtCore.QThread()
-spec_Duino.moveToThread(spec_thread)
+spec_MSP.moveToThread(spec_thread)
 spec_thread.start()
-sensor_Duino = Sensor_Duino()
-sensor_thread = QtCore.QThread()
-sensor_Duino.moveToThread(sensor_thread)
-sensor_thread.start()
 
 # Create the GUI and start the application
 main_form = main()
 app.exec_()
 
-# ToDo: Implement integration time in bytes if possible
 
 # The MIT License (MIT)
 #

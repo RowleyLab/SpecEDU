@@ -22,7 +22,7 @@ void loop(){
     int amp = random(500) + 3500;
     for (int i = 0; i < 2048; i++){
       
-      unsigned int data = int(amp * pow(2.7,-(double(i-center)*(i-1024)/160000)) + random(200));      
+      unsigned int data = int(amp * pow(2.7,-(double(i-center)*(i-1024)/160000)) + random(20));      
       Serial.write(byte(data>>8)); // high byte
       Serial.write(byte(data)); // low byte      
     }
